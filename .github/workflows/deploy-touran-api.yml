@@ -1,0 +1,44 @@
+name: Deploy Touran API
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'server/api/upload-log.php'
+      - '.github/workflows/deploy-touran-api.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PHP source
+        run: php -l server/api/upload-log.php
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy upload endpoint only
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.SFTP_HOST }}"
+          test -n "${{ secrets.SFTP_PORT }}"
+          test -n "${{ secrets.SSH_USERNAME }}"
+          sshpass -e scp -P "${{ secrets.SFTP_PORT }}" -o StrictHostKeyChecking=no server/api/upload-log.php "${{ secrets.SSH_USERNAME }}@${{ secrets.SFTP_HOST }}:/var/www/vhosts/dezender.de/httpdocs/touran/api/upload-log.php"
+          sshpass -e ssh -p "${{ secrets.SFTP_PORT }}" -o StrictHostKeyChecking=no "${{ secrets.SSH_USERNAME }}@${{ secrets.SFTP_HOST }}" "php -l /var/www/vhosts/dezender.de/httpdocs/touran/api/upload-log.php && mkdir -p /var/www/vhosts/dezender.de/private/touran-logs && chmod 0770 /var/www/vhosts/dezender.de/private/touran-logs"
+      - name: Validate live upload endpoint
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS -X POST 'https://www.dezender.de/touran/api/upload-log.php' \
+            -H 'Content-Type: text/plain; charset=utf-8' \
+            -H 'X-Touran-Install: ci-validation' \
+            -H 'X-Touran-Session: deploy-check' \
+            -H 'X-Touran-App: ci' \
+            -H 'X-Touran-Report: raw-can-live' \
+            --data-binary $'TouranLive raw CAN live\ngateway_session;gateway_ts_us;channel;can_id;frame_type;data_hex\nci;1;CH1;0x1;STD;00\n')"
+          echo "$response"
+          echo "$response" | grep -q '"ok":true'
