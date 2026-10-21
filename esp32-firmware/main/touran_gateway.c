@@ -18,7 +18,7 @@
 #include "lwip/tcp.h"
 
 #define GATEWAY_PORT 13569
-#define GATEWAY_FW "0.2.0"
+#define GATEWAY_FW "0.2.1"
 
 static const char *TAG = "touran_gateway";
 static SemaphoreHandle_t s_client_mutex;
@@ -51,7 +51,10 @@ static bool send_line_nonblocking(const char *line)
     }
     size_t len = strlen(line);
     int sent = send(fd, line, len, MSG_DONTWAIT);
-    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+    /* Once a prefix has reached TCP, dropping its suffix would splice the next
+     * JSON message into it. Disconnect so the receiver can start a clean stream. */
+    if ((sent >= 0 && sent != (int)len) ||
+        (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
         close_client_locked();
     }
     bool ok = sent == (int)len;
@@ -132,6 +135,7 @@ static void serve_client(int fd)
     char rx[384];
     char line[768];
     size_t used = 0;
+    bool oversized = false;
     while (1) {
         int n = recv(fd, rx, sizeof(rx), 0);
         if (n <= 0) break;
@@ -139,18 +143,19 @@ static void serve_client(int fd)
             char c = rx[i];
             if (c == '\n') {
                 line[used] = '\0';
-                handle_command(line);
+                if (!oversized) handle_command(line);
                 used = 0;
-            } else if (c != '\r') {
+                oversized = false;
+            } else if (c != '\r' && !oversized) {
                 if (used + 1 < sizeof(line)) line[used++] = c;
-                else used = 0;
+                else { used = 0; oversized = true; }
             }
         }
     }
 
     xSemaphoreTake(s_client_mutex, portMAX_DELAY);
     if (s_client_fd == fd) close_client_locked();
-    else close(fd);
+    /* A failed send may already have closed fd. Never close a reused descriptor. */
     xSemaphoreGive(s_client_mutex);
 }
 

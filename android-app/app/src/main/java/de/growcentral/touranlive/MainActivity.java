@@ -1251,9 +1251,9 @@ public class MainActivity extends Activity {
                 putVag("Drehzahl", b.value(1)); putVag("Motorlast", b.value(2));
                 putVag("VAG_BoostTargetAbs", b.value(3)); putVag("VAG_BoostActualAbs", b.value(4));
                 break;
-            case 134:
-                putVag("VAG_OilTemp", b.value(1));
-                break;
+            // MWB 134 is unnamed in the actual engine export. Do not advertise
+            // field 1 as oil temperature without a verified CAV definition.
+            // The named reference is cluster IDE00196, not this engine block.
             case 210:
                 putVag("VAG_MAF", b.value(3));
                 break;

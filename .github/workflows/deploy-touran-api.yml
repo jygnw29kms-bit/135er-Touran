@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'server/api/upload-log.php'
+      - 'tests/test_upload_api.py'
       - '.github/workflows/deploy-touran-api.yml'
   workflow_dispatch:
 
@@ -18,18 +19,26 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate PHP source
         run: php -l server/api/upload-log.php
+      - name: Test upload API locally
+        run: python3 tests/test_upload_api.py -v
       - name: Install sshpass
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
       - name: Deploy upload endpoint only
         env:
           SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          DEPLOY_HOST: ${{ secrets.SFTP_HOST }}
+          DEPLOY_PORT: ${{ secrets.SFTP_PORT }}
+          DEPLOY_USER: ${{ secrets.SSH_USERNAME }}
         run: |
           set -euo pipefail
-          test -n "${{ secrets.SFTP_HOST }}"
-          test -n "${{ secrets.SFTP_PORT }}"
-          test -n "${{ secrets.SSH_USERNAME }}"
-          sshpass -e scp -P "${{ secrets.SFTP_PORT }}" -o StrictHostKeyChecking=no server/api/upload-log.php "${{ secrets.SSH_USERNAME }}@${{ secrets.SFTP_HOST }}:/var/www/vhosts/dezender.de/httpdocs/touran/api/upload-log.php"
-          sshpass -e ssh -p "${{ secrets.SFTP_PORT }}" -o StrictHostKeyChecking=no "${{ secrets.SSH_USERNAME }}@${{ secrets.SFTP_HOST }}" "php -l /var/www/vhosts/dezender.de/httpdocs/touran/api/upload-log.php && mkdir -p /var/www/vhosts/dezender.de/private/touran-logs && chmod 0770 /var/www/vhosts/dezender.de/private/touran-logs"
+          test -n "$SSHPASS"
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_USER"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          sshpass -e scp -P "$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new server/api/upload-log.php "$DEPLOY_USER@$DEPLOY_HOST:/var/www/vhosts/dezender.de/httpdocs/touran/api/upload-log.php"
+          sshpass -e ssh -p "$DEPLOY_PORT" -o StrictHostKeyChecking=accept-new "$DEPLOY_USER@$DEPLOY_HOST" "php -l /var/www/vhosts/dezender.de/httpdocs/touran/api/upload-log.php && mkdir -p /var/www/vhosts/dezender.de/private/touran-logs && chmod 0770 /var/www/vhosts/dezender.de/private/touran-logs"
       - name: Validate live upload endpoint
         run: |
           set -euo pipefail

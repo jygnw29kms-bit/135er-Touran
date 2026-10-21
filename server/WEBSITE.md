@@ -6,7 +6,7 @@ Das große Titelbild ist das vom Eigentümer hochgeladene `splash_logo_001.bmp`,
 
 ## Bereitstellung
 
-Die Nutzeranweisung autorisiert die Aktualisierung der Website. In dieser Sitzung ist aber kein Serverzugang oder Deployment-Workflow eingerichtet. Die Datei `/srv/touranradio/upload/inbox` aus einer früheren Sitzung belegt keinen Zugriff in dieser Sitzung und auch nicht den Webroot.
+Nachtrag 21.10.2026: `.github/workflows/deploy-touran-api.yml` stellt inzwischen einen GitHub-Deploymentweg für **den Upload-Endpunkt** bereit. Er veröffentlicht nicht die Website oder die APK. Sein letzter geprüfter Lauf für `b6bd252` scheiterte im SSH-/SCP-Schritt. Der Workflow nennt `/var/www/vhosts/dezender.de/httpdocs/touran` als Ziel und verwendet GitHub-Secrets; ihre tatsächliche Serverberechtigung ist damit nicht nachgewiesen. Die Datei `/srv/touranradio/upload/inbox` aus einer früheren Sitzung ist kein Webroot.
 
 1. Tatsächlichen Webroot für `/touran/` bestimmen und die bisherige `index.html` sichern.
 2. `assets/` hochladen und Bild-/CSS-/JS-Abrufe prüfen.
@@ -31,4 +31,4 @@ python3 -m http.server 8080 --directory server
 4. `https://dezender.de/touran/` und `https://dezender.de/touran/assets/135er-touran.webp` prüfen, gegebenenfalls Browsercache mit Strg+F5 neu laden.
 5. APK-Link, Galerie und Mobilansicht prüfen. Upload-API, Logs und `update.json` bleiben beim Austausch dieser Website-Dateien erhalten.
 
-Alternativ unterstützt Plesk bei installierter Git-Erweiterung eine Repository-Bereitstellung. Dafür muss das Bereitstellungsziel zur bestehenden Website passen; nicht das komplette Projekt in den Webroot ausrollen. In dieser Sitzung sind weder eine Plesk-Verbindung noch eine konfigurierte Git-Bereitstellung verfügbar.
+Alternativ unterstützt Plesk bei installierter Git-Erweiterung eine Repository-Bereitstellung. Dafür muss das Bereitstellungsziel zur bestehenden Website passen; nicht das komplette Projekt in den Webroot ausrollen. Eine angemeldete Plesk-Verbindung oder eine Plesk-Git-Bereitstellung ist in dieser Sitzung nicht verfügbar. Der vorhandene GitHub-API-Workflow ist davon getrennt.

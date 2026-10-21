@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "esp32-firmware/**"
+      - "tests/test_gateway_native.py"
       - ".github/workflows/build-esp32.yml"
 
 jobs:
@@ -12,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test gateway stream boundaries on host
+        run: python3 tests/test_gateway_native.py -v
       - name: Install ESP-IDF 5.5.2
         uses: espressif/install-esp-idf-action@v1
         with:

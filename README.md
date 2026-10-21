@@ -67,3 +67,11 @@ Die Regressionstests prüfen Protokollgrenzen, echte lokale TCP-Befehlsübertrag
 [TouranLive 0.7.1 Debug-APK](https://github.com/jygnw29kms-bit/135er-Touran/raw/refs/heads/main/downloads/TouranLive-0.7.1-debug.apk) · [SHA-256](downloads/TouranLive-0.7.1-debug.apk.sha256)
 
 ESP32-/WLAN-Entwicklungsstand, Android ab 8.0. 23 Tests, APK-Build und Lint erfolgreich geprüft. Installation als Update setzt einen kompatiblen Signierschlüssel voraus. Das Server-Update auf dezender.de wurde damit nicht geändert.
+
+## Prüfung und Korrekturen 21.10.2026 – App 0.7.2
+
+Beschädigtes Touran-Bild ersetzt, unbelegte Öltemperatur-Zuordnung entfernt und Firmware-TCP-Framing sowie Upload-Verarbeitung korrigiert. 23 App-Tests, Firmware-Build, ein nativer Firmware-Regressionstest und fünf lokale API-Tests erfolgreich. Android-Lint: keine Fehler, 19 Warnungen.
+
+[Prüfbericht und Grenzen](docs/review-2026-10-21.md) · [Test-APK 0.7.2](https://github.com/jygnw29kms-bit/135er-Touran/raw/refs/heads/main/downloads/TouranLive-0.7.2-debug.apk) · [SHA-256](downloads/TouranLive-0.7.2-debug.apk.sha256)
+
+Die öffentliche Serverversion wird dadurch nicht automatisch zur APK 0.7.2. Der vorhandene API-Deploymentworkflow ist davon getrennt.
