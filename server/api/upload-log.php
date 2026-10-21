@@ -24,12 +24,20 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $clientDay)) {
 } else {
     $dayPath = $now->format('Y/m/d');
 }
-$root = dirname(__DIR__) . '/logs';
+$root = dirname(__DIR__, 3) . '/private/touran-logs';
 $dir = $root . '/' . $dayPath . '/' . $install;
 if (!is_dir($dir) && !mkdir($dir, 0750, true) && !is_dir($dir)) { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'mkdir failed']); exit; }
 $stamp = $now->format('His_u');
-$file = $dir . '/' . $stamp . '_' . $report . '_' . $session . '.log';
-if (file_put_contents($file, $body, LOCK_EX) === false) { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'write failed']); exit; }
+if ($report === 'raw-can-live') {
+    $file = $dir . '/LIVE_' . $session . '.csv';
+    $fresh = !is_file($file) || filesize($file) === 0;
+    $prefix = $fresh ? "# TouranLive raw CAN live stream\n# app=" . $app . "\n# session=" . $session . "\n" : "# batch_received=" . $now->format(DATE_ATOM) . "\n";
+    if (file_put_contents($file, $prefix . $body, FILE_APPEND | LOCK_EX) === false) { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'live append failed']); exit; }
+    @file_put_contents($dir . '/LATEST_LIVE', basename($file) . "\n", LOCK_EX);
+} else {
+    $file = $dir . '/' . $stamp . '_' . $report . '_' . $session . '.log';
+    if (file_put_contents($file, $body, LOCK_EX) === false) { http_response_code(500); echo json_encode(['ok'=>false,'error'=>'write failed']); exit; }
+}
 $index = $dir . '/index.ndjson';
 $entry = ['received'=>$now->format(DATE_ATOM),'log_day'=>str_replace('/','-',$dayPath),'file'=>basename($file),'report'=>$report,'app'=>$app,'session'=>$session,'queue_file'=>$queue,'bytes'=>strlen($body),'remote'=>hash('sha256', (string)($_SERVER['REMOTE_ADDR'] ?? ''))];
 file_put_contents($index, json_encode($entry, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)."\n", FILE_APPEND|LOCK_EX);
