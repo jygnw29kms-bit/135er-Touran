@@ -78,7 +78,6 @@ public final class Esp32GatewayClient implements AutoCloseable {
     private void runTcp(Session s, String host, int port) {
         String reason = "connection closed";
         try {
-            // Publish the socket before connect so cancellation also interrupts connection attempts.
             synchronized (s) {
                 if (!s.running) return;
                 s.socket = s.factory.createSocket();
@@ -130,7 +129,6 @@ public final class Esp32GatewayClient implements AutoCloseable {
         try { o = GatewayProtocol.parse(line); }
         catch (Exception e) {
             listener.onProtocolError(line, safe(e.getMessage()));
-            // A peer announcing incompatible identity/mode cannot establish a trusted session.
             String type = "";
             try { type = new JSONObject(line).optString("type"); } catch (Exception ignored) { }
             if ("hello".equals(type) || "health".equals(type)) throw new IOException("incompatible gateway: " + e.getMessage());
@@ -180,6 +178,34 @@ public final class Esp32GatewayClient implements AutoCloseable {
             sendAsync(command("filter").put("ch", channel).put("ids", a));
         } catch (Exception e) { listener.onProtocolError("filter", safe(e.getMessage())); }
     }
+
+    /**
+     * Transport-neutral navigation bridge. The current vehicle-test firmware rejects this
+     * command with READ_ONLY and therefore never transmits a CAN frame.
+     */
+    public void sendMfaNavigation(NavigationManeuver maneuver) {
+        NavigationManeuver m = maneuver == null ? NavigationManeuver.inactive() : maneuver;
+        try {
+            JSONObject o = command("mfa_nav");
+            o.put("active", m.active);
+            o.put("action", m.action);
+            o.put("distance_m", m.distanceMeters);
+            o.put("road_name", m.roadName);
+            o.put("road_number", m.roadNumber);
+            o.put("exit_text", m.exitText);
+            o.put("roundabout_exit", m.roundaboutExit);
+            o.put("heading_deg", m.headingDegrees);
+            sendAsync(o);
+        } catch (Exception e) { listener.onProtocolError("mfa_nav", safe(e.getMessage())); }
+    }
+
+    public void sendMfaCompass(double headingDegrees) {
+        try {
+            double h = headingDegrees % 360.0;
+            if (h < 0) h += 360.0;
+            sendAsync(command("mfa_compass").put("heading_deg", h));
+        } catch (Exception e) { listener.onProtocolError("mfa_compass", safe(e.getMessage())); }
+    }
     private static JSONObject command(String name) {
         JSONObject o = new JSONObject();
         try { o.put("cmd", name); } catch (Exception e) { throw new IllegalStateException(e); }
@@ -194,7 +220,7 @@ public final class Esp32GatewayClient implements AutoCloseable {
                 try { s.send(command); }
                 catch (IOException e) { listener.onProtocolError(command.toString(), safe(e.getMessage())); s.stop(); }
             });
-        } catch (RejectedExecutionException ignored) { /* client closed */ }
+        } catch (RejectedExecutionException ignored) { }
     }
     public void disconnect() { Session s = active; if (s != null) s.stop(); }
     @Override public synchronized void close() {
