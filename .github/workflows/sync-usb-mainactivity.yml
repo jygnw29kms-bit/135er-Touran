@@ -1,0 +1,33 @@
+name: Sync USB MainActivity
+
+on:
+  push:
+    branches: [ esp32-weekend-ro-20261021 ]
+    paths:
+      - "tools/usb-mainactivity.patch"
+      - ".github/workflows/sync-usb-mainactivity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: esp32-weekend-ro-20261021
+      - name: Apply USB migration patch
+        run: |
+          set -euo pipefail
+          git apply --check tools/usb-mainactivity.patch
+          git apply tools/usb-mainactivity.patch
+          git diff --check
+      - name: Commit synchronized MainActivity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android-app/app/src/main/java/de/growcentral/touranlive/MainActivity.java
+          git commit -m "Switch MainActivity to USB gateway transport"
+          git push origin HEAD:esp32-weekend-ro-20261021
