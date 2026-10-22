@@ -13,32 +13,65 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Enforce CAN2 hard TX block
+      - name: Enforce weekend safety profile
         shell: python
         run: |
           from pathlib import Path
           import re
+
+          # CAN2: hard block all transmit attempts.
           p = Path('esp32-firmware/components/esp_bsp/bsp_xl2515.c')
           s = p.read_text()
           pat = r'bool bsp_xl2515_send\(uint32_t can_id, const uint8_t \*data, uint8_t len, bool extd\)\n\{.*?\n\}\n\nstatic bool xl_recv_one'
           rep = '''bool bsp_xl2515_send(uint32_t can_id, const uint8_t *data, uint8_t len, bool extd)\n{\n    (void)can_id; (void)data; (void)len; (void)extd;\n    ESP_LOGW(TAG, "CAN CH2 TX blocked: vehicle-test firmware is read-only");\n    return false;\n}\n\nstatic bool xl_recv_one'''
-          out, n = re.subn(pat, rep, s, flags=re.S)
+          s, n = re.subn(pat, rep, s, flags=re.S)
           if n != 1:
-              raise SystemExit(f'CAN2 hard-block patch count={n}')
-          p.write_text(out)
+              raise SystemExit(f'CAN2 TX hard-block patch count={n}')
+
+          # CAN2: lock bitrate to 100 kbit/s.
+          pat = r'bool bsp_xl2515_set_rate\(uint32_t kbps\)\n\{.*?\n\}\n\nuint32_t bsp_xl2515_get_rate'
+          rep = '''bool bsp_xl2515_set_rate(uint32_t kbps)\n{\n    if (kbps == 100 && s_xl_ready && s_can2_bitrate_kbps == 100) return true;\n    ESP_LOGW(TAG, "CAN CH2 bitrate change blocked: weekend vehicle-test profile is fixed at 100 kbit/s");\n    return false;\n}\n\nuint32_t bsp_xl2515_get_rate'''
+          s, n = re.subn(pat, rep, s, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'CAN2 bitrate-lock patch count={n}')
+          p.write_text(s)
+
+          # CAN1: lock bitrate to 500 kbit/s.
+          p = Path('esp32-firmware/components/esp_bsp/bsp_can.c')
+          s = p.read_text()
+          pat = r'esp_err_t bsp_can1_set_rate\(uint32_t kbps\)\n\{.*?\n\}\n\nbool bsp_can1_send'
+          rep = '''esp_err_t bsp_can1_set_rate(uint32_t kbps)\n{\n    if (kbps == 500 && s_can1_ready && s_can1_bitrate_kbps == 500) return ESP_OK;\n    ESP_LOGW(TAG, "CAN CH1 bitrate change blocked: weekend vehicle-test profile is fixed at 500 kbit/s");\n    return ESP_ERR_NOT_SUPPORTED;\n}\n\nbool bsp_can1_send'''
+          s, n = re.subn(pat, rep, s, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'CAN1 bitrate-lock patch count={n}')
+          p.write_text(s)
+
+          # Disable scheduled CAN event task for the vehicle capture profile.
+          p = Path('esp32-firmware/components/esp_bsp/waveshare_twai_port.c')
+          s = p.read_text()
+          s, n = re.subn(r'\n\s*ESP_RETURN_ON_ERROR\(bsp_web_start_event_task\(\), TAG, "event task start failed"\);',
+                         '\n    // Scheduled CAN events disabled in weekend vehicle-test profile.', s)
+          if n not in (0, 1):
+              raise SystemExit(f'event-task patch count={n}')
+          p.write_text(s)
+
       - name: Verify hard read-only guards
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'TWAI_MODE_LISTEN_ONLY' esp32-firmware/components/esp_bsp/bsp_can.c
           grep -q 'CAN CH1 TX blocked' esp32-firmware/components/esp_bsp/bsp_can.c
+          grep -q 'fixed at 500 kbit/s' esp32-firmware/components/esp_bsp/bsp_can.c
           grep -q 'XL_REQOP_LISTEN_ONLY' esp32-firmware/components/esp_bsp/bsp_xl2515.c
           grep -q 'CAN CH2 TX blocked' esp32-firmware/components/esp_bsp/bsp_xl2515.c
+          grep -q 'fixed at 100 kbit/s' esp32-firmware/components/esp_bsp/bsp_xl2515.c
+          ! grep -q 'bsp_web_start_event_task()' esp32-firmware/components/esp_bsp/waveshare_twai_port.c
           grep -q 'tx_hard_blocked\\":true' esp32-firmware/main/touran_gateway.c
-          grep -q '0.3.1-weekend-ro' esp32-firmware/main/touran_gateway.c
+          grep -q '0.3.2-weekend-ro' esp32-firmware/main/touran_gateway.c
           grep -q 'mfa_nav' esp32-firmware/main/touran_gateway.c
           grep -q 'mfa_compass' esp32-firmware/main/touran_gateway.c
           grep -q 'ota' esp32-firmware/main/touran_gateway.c
+
       - name: Install ESP-IDF 5.5.2
         uses: espressif/install-esp-idf-action@v1
         with:
@@ -57,7 +90,7 @@ jobs:
           cp esp32-firmware/build/partition_table/partition-table.bin dist/esp32-weekend/
           cp esp32-firmware/build/*.bin dist/esp32-weekend/
           cp esp32-firmware/build/flasher_args.json dist/esp32-weekend/
-          printf '0.3.1-weekend-ro\nCAN1=500k listen-only + TX hard block\nCAN2=100k listen-only + TX hard block\nTCP framing fixes included\n' > dist/esp32-weekend/BUILD_PROFILE.txt
+          printf '0.3.2-weekend-ro\nCAN1=500k listen-only + TX hard block + bitrate lock\nCAN2=100k listen-only + TX hard block + bitrate lock\nScheduled CAN events disabled\nTCP framing fixes included\n' > dist/esp32-weekend/BUILD_PROFILE.txt
           sha256sum dist/esp32-weekend/* > dist/esp32-weekend/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
