@@ -25,7 +25,7 @@ dependencies {
     testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
 }
 
-// Productive vehicle transport is USB Serial/JTAG; Wi-Fi is not required by the gateway.
+// Productive vehicle transport is USB Serial/JTAG; receiver registration is lint-safe on all supported Android versions.
 android.applicationVariants.all { variant ->
     variant.outputs.all { output ->
         outputFileName = "TouranLive-" + variant.versionName + "-" + variant.buildType.name + ".apk"
