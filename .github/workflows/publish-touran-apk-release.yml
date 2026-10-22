@@ -35,11 +35,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          repo='jygnw29kms-bit/135er-Touran'
           tag='touranlive-0.7.3-usb'
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/android/TouranLive-0.7.3-USB.apk --clobber
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/android/TouranLive-0.7.3-USB.apk --clobber --repo "$repo"
           else
             gh release create "$tag" dist/android/TouranLive-0.7.3-USB.apk \
+              --repo "$repo" \
               --title 'TouranLive 0.7.3 USB' \
               --notes 'Validated USB-only weekend build for ESP32-S3-CAN-2CH-U.'
           fi
