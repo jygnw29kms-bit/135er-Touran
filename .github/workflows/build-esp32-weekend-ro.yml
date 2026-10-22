@@ -35,7 +35,10 @@ jobs:
           grep -q 'XL_REQOP_LISTEN_ONLY' esp32-firmware/components/esp_bsp/bsp_xl2515.c
           grep -q 'CAN CH2 TX blocked' esp32-firmware/components/esp_bsp/bsp_xl2515.c
           grep -q 'tx_hard_blocked\\":true' esp32-firmware/main/touran_gateway.c
-          grep -q '0.3.0-weekend-ro' esp32-firmware/main/touran_gateway.c
+          grep -q '0.3.1-weekend-ro' esp32-firmware/main/touran_gateway.c
+          grep -q 'mfa_nav' esp32-firmware/main/touran_gateway.c
+          grep -q 'mfa_compass' esp32-firmware/main/touran_gateway.c
+          grep -q 'ota' esp32-firmware/main/touran_gateway.c
       - name: Install ESP-IDF 5.5.2
         uses: espressif/install-esp-idf-action@v1
         with:
@@ -54,7 +57,7 @@ jobs:
           cp esp32-firmware/build/partition_table/partition-table.bin dist/esp32-weekend/
           cp esp32-firmware/build/*.bin dist/esp32-weekend/
           cp esp32-firmware/build/flasher_args.json dist/esp32-weekend/
-          printf '0.3.0-weekend-ro\nCAN1=500k listen-only + TX hard block\nCAN2=100k listen-only + TX hard block\n' > dist/esp32-weekend/BUILD_PROFILE.txt
+          printf '0.3.1-weekend-ro\nCAN1=500k listen-only + TX hard block\nCAN2=100k listen-only + TX hard block\nTCP framing fixes included\n' > dist/esp32-weekend/BUILD_PROFILE.txt
           sha256sum dist/esp32-weekend/* > dist/esp32-weekend/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
