@@ -3,7 +3,6 @@
 #include "bsp_can.h"
 #include "bsp_common.h"
 #include "bsp_rtc.h"
-#include "bsp_web.h"
 #include "bsp_xl2515.h"
 #include "esp_check.h"
 #include "freertos/FreeRTOS.h"
@@ -19,12 +18,12 @@ esp_err_t waveshare_main_wifi_ap_init(void)
     // comfort/infotainment low-speed CAN = 100 kbit/s. Both channels remain listen-only.
     ESP_RETURN_ON_ERROR(bsp_can1_init(500), TAG, "can1 init failed");
     ESP_RETURN_ON_ERROR(bsp_xl2515_init(100), TAG, "can2 init failed");
-    ESP_RETURN_ON_ERROR(bsp_web_init(), TAG, "web init failed");
 
     ESP_RETURN_ON_ERROR(bsp_rtc_start_task(), TAG, "rtc task start failed");
     ESP_RETURN_ON_ERROR(bsp_can1_start_task(), TAG, "can1 task start failed");
     ESP_RETURN_ON_ERROR(bsp_xl2515_start_task(), TAG, "can2 task start failed");
-    ESP_RETURN_ON_ERROR(bsp_web_start_event_task(), TAG, "event task start failed");
+    // Vehicle profile: no Wi-Fi AP, no web server and no scheduled CAN events.
+    // USB-C is the only application transport; CAN remains passive/listen-only.
     return ESP_OK;
 }
 
