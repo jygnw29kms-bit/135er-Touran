@@ -53,6 +53,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
+
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.BufferedWriter;
@@ -248,8 +250,8 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         IntentFilter usbFilter = new IntentFilter(ACTION_USB_PERMISSION);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbPermissionReceiver, usbFilter, RECEIVER_NOT_EXPORTED);
-        else registerReceiver(usbPermissionReceiver, usbFilter);
+        ContextCompat.registerReceiver(this, usbPermissionReceiver, usbFilter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
         usbReceiverRegistered = true;
         telemetry = new DebugTelemetry(this);
         resetLog();
