@@ -52,28 +52,44 @@ jobs:
           p.write_text(s)
 
       - name: Verify hard read-only guards
-        shell: bash
+        shell: python
         run: |
-          set -euo pipefail
-          grep -q 'CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y' esp32-firmware/sdkconfig.defaults
-          grep -q 'TWAI_MODE_LISTEN_ONLY' esp32-firmware/components/esp_bsp/bsp_can.c
-          grep -q 'CAN CH1 TX blocked' esp32-firmware/components/esp_bsp/bsp_can.c
-          grep -q 'fixed at 500 kbit/s' esp32-firmware/components/esp_bsp/bsp_can.c
-          grep -q 'XL_REQOP_LISTEN_ONLY' esp32-firmware/components/esp_bsp/bsp_xl2515.c
-          grep -q 'CAN CH2 TX blocked' esp32-firmware/components/esp_bsp/bsp_xl2515.c
-          grep -q 'fixed at 100 kbit/s' esp32-firmware/components/esp_bsp/bsp_xl2515.c
-          ! grep -q 'bsp_web_start_event_task()' esp32-firmware/components/esp_bsp/waveshare_twai_port.c
-          ! grep -R -q 'twai_transmit(' esp32-firmware
-          grep -q 'tx_hard_blocked\\":true' esp32-firmware/main/touran_gateway.c
-          grep -q '0.4.0-usb-weekend-ro' esp32-firmware/main/touran_gateway.c
-          grep -q 'usb_serial_jtag_driver_install' esp32-firmware/main/touran_gateway.c
-          grep -q '\"transport\":\"usb-serial-jtag\"' esp32-firmware/main/touran_gateway.c
-          grep -q '\"wifi\":false' esp32-firmware/main/touran_gateway.c
-          ! grep -q 'bsp_web_init()' esp32-firmware/components/esp_bsp/waveshare_twai_port.c
-          ! grep -q 'esp_wifi_' esp32-firmware/main/touran_gateway.c
-          grep -q 'mfa_nav' esp32-firmware/main/touran_gateway.c
-          grep -q 'mfa_compass' esp32-firmware/main/touran_gateway.c
-          grep -q 'ota' esp32-firmware/main/touran_gateway.c
+          from pathlib import Path
+
+          files = {
+              'sdk': Path('esp32-firmware/sdkconfig.defaults').read_text(),
+              'can1': Path('esp32-firmware/components/esp_bsp/bsp_can.c').read_text(),
+              'can2': Path('esp32-firmware/components/esp_bsp/bsp_xl2515.c').read_text(),
+              'port': Path('esp32-firmware/components/esp_bsp/waveshare_twai_port.c').read_text(),
+              'gateway': Path('esp32-firmware/main/touran_gateway.c').read_text(),
+          }
+          required = [
+              ('16MB flash', 'CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y' in files['sdk']),
+              ('CAN1 listen-only', 'TWAI_MODE_LISTEN_ONLY' in files['can1']),
+              ('CAN1 TX hard block', 'CAN CH1 TX blocked' in files['can1']),
+              ('CAN1 fixed 500k', 'fixed at 500 kbit/s' in files['can1']),
+              ('CAN2 listen-only', 'XL_REQOP_LISTEN_ONLY' in files['can2']),
+              ('CAN2 TX hard block', 'CAN CH2 TX blocked' in files['can2']),
+              ('CAN2 fixed 100k', 'fixed at 100 kbit/s' in files['can2']),
+              ('scheduled events disabled', 'bsp_web_start_event_task()' not in files['port']),
+              ('gateway version', '0.4.0-usb-weekend-ro' in files['gateway']),
+              ('USB Serial/JTAG driver', 'usb_serial_jtag_driver_install' in files['gateway']),
+              ('USB transport advertised', 'usb-serial-jtag' in files['gateway']),
+              ('Wi-Fi false advertised', '\\"wifi\\":false' in files['gateway']),
+              ('web init disabled', 'bsp_web_init()' not in files['port']),
+              ('no Wi-Fi calls in gateway', 'esp_wifi_' not in files['gateway']),
+              ('MFA nav rejected/read-only', 'mfa_nav' in files['gateway']),
+              ('MFA compass rejected/read-only', 'mfa_compass' in files['gateway']),
+              ('OTA rejected/read-only', 'ota' in files['gateway']),
+              ('hard block advertised', 'tx_hard_blocked' in files['gateway']),
+          ]
+          all_sources = '\n'.join(p.read_text(errors='ignore') for p in Path('esp32-firmware').rglob('*') if p.is_file() and p.suffix in {'.c','.h'})
+          required.append(('no direct twai_transmit', 'twai_transmit(' not in all_sources))
+          failed = [name for name, ok in required if not ok]
+          for name, ok in required:
+              print(f"{'OK' if ok else 'FAIL'}: {name}")
+          if failed:
+              raise SystemExit('Safety verification failed: ' + ', '.join(failed))
 
       - name: Install ESP-IDF 5.5.2
         uses: espressif/install-esp-idf-action@v1
