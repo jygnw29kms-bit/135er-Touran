@@ -65,7 +65,12 @@ jobs:
           ! grep -q 'bsp_web_start_event_task()' esp32-firmware/components/esp_bsp/waveshare_twai_port.c
           ! grep -R -q 'twai_transmit(' esp32-firmware
           grep -q 'tx_hard_blocked\\":true' esp32-firmware/main/touran_gateway.c
-          grep -q '0.3.3-weekend-ro' esp32-firmware/main/touran_gateway.c
+          grep -q '0.4.0-usb-weekend-ro' esp32-firmware/main/touran_gateway.c
+          grep -q 'usb_serial_jtag_driver_install' esp32-firmware/main/touran_gateway.c
+          grep -q '\"transport\":\"usb-serial-jtag\"' esp32-firmware/main/touran_gateway.c
+          grep -q '\"wifi\":false' esp32-firmware/main/touran_gateway.c
+          ! grep -q 'bsp_web_init()' esp32-firmware/components/esp_bsp/waveshare_twai_port.c
+          ! grep -q 'esp_wifi_' esp32-firmware/main/touran_gateway.c
           grep -q 'mfa_nav' esp32-firmware/main/touran_gateway.c
           grep -q 'mfa_compass' esp32-firmware/main/touran_gateway.c
           grep -q 'ota' esp32-firmware/main/touran_gateway.c
@@ -88,7 +93,7 @@ jobs:
           cp esp32-firmware/build/partition_table/partition-table.bin dist/esp32-weekend/
           cp esp32-firmware/build/*.bin dist/esp32-weekend/
           cp esp32-firmware/build/flasher_args.json dist/esp32-weekend/
-          printf '0.3.3-weekend-ro\n16MB Waveshare flash profile\nCAN1=500k listen-only + TX hard block + bitrate lock\nCAN2=100k listen-only + TX hard block + bitrate lock\nScheduled CAN events disabled\nTCP framing fixes included\n' > dist/esp32-weekend/BUILD_PROFILE.txt
+          printf '0.4.0-usb-weekend-ro\n16MB Waveshare flash profile\nUSB Serial/JTAG productive transport\nWi-Fi AP and web server disabled\nCAN1=500k listen-only + TX hard block + bitrate lock\nCAN2=100k listen-only + TX hard block + bitrate lock\nScheduled CAN events disabled\n' > dist/esp32-weekend/BUILD_PROFILE.txt
           sha256sum dist/esp32-weekend/* > dist/esp32-weekend/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
