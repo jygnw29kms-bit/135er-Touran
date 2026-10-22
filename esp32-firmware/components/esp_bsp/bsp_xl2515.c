@@ -109,9 +109,7 @@ static esp_err_t xl_read_reg(uint8_t reg, uint8_t *value)
     uint8_t tx[3] = {XL_CAN_READ, reg, 0};
     uint8_t rx[3] = {0};
     esp_err_t err = xl_transfer(tx, rx, sizeof(tx));
-    if (err != ESP_OK) {
-        return err;
-    }
+    if (err != ESP_OK) return err;
     *value = rx[2];
     return ESP_OK;
 }
@@ -120,9 +118,7 @@ static esp_err_t xl_read_regs(uint8_t reg, uint8_t *data, uint8_t len)
 {
     uint8_t tx[12] = {0};
     uint8_t rx[12] = {0};
-    if (len + 2 > sizeof(tx)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
+    if (len + 2 > sizeof(tx)) return ESP_ERR_INVALID_SIZE;
     tx[0] = XL_CAN_READ;
     tx[1] = reg;
     ESP_RETURN_ON_ERROR(xl_transfer(tx, rx, len + 2), TAG, "xl read regs failed");
@@ -133,9 +129,7 @@ static esp_err_t xl_read_regs(uint8_t reg, uint8_t *data, uint8_t len)
 static esp_err_t xl_write_regs(uint8_t reg, const uint8_t *data, uint8_t len)
 {
     uint8_t tx[12] = {0};
-    if (len + 2 > sizeof(tx)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
+    if (len + 2 > sizeof(tx)) return ESP_ERR_INVALID_SIZE;
     tx[0] = XL_CAN_WRITE;
     tx[1] = reg;
     memcpy(&tx[2], data, len);
@@ -216,9 +210,7 @@ static esp_err_t xl_read_id(uint8_t reg, uint32_t *can_id, bool *extd)
 static esp_err_t xl_configure(uint32_t kbps)
 {
     uint8_t regs[3];
-    if (!xl_rate_regs(kbps, regs)) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (!xl_rate_regs(kbps, regs)) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_xl_mutex, portMAX_DELAY);
     esp_err_t err = xl_write_reg(XL_CANCTRL, XL_REQOP_CONFIG | XL_CLKOUT_DISABLED);
     if (err != ESP_OK) {
@@ -251,7 +243,7 @@ static esp_err_t xl_configure(uint32_t kbps)
     err = err == ESP_OK ? xl_write_reg(XL_CANINTF, 0x00) : err;
     err = err == ESP_OK ? xl_write_reg(XL_EFLG, 0x00) : err;
     err = err == ESP_OK ? xl_write_reg(XL_CANINTE, XL_RX0IE | XL_RX1IE | XL_ERRIE) : err;
-    // 135er Touran: passive capture only at boot. Listen-Only transmits neither frames nor ACK/error flags.
+    // 135er Touran: passive capture only. Listen-Only transmits neither frames nor ACK/error flags.
     err = err == ESP_OK ? xl_write_reg(XL_CANCTRL, XL_REQOP_LISTEN_ONLY | XL_CLKOUT_DISABLED) : err;
     if (err != ESP_OK) {
         xSemaphoreGive(s_xl_mutex);
@@ -260,9 +252,7 @@ static esp_err_t xl_configure(uint32_t kbps)
     vTaskDelay(pdMS_TO_TICKS(10));
     err = xl_read_reg(XL_CANSTAT, &canstat);
     xSemaphoreGive(s_xl_mutex);
-    if (err != ESP_OK) {
-        return err;
-    }
+    if (err != ESP_OK) return err;
     return (canstat & XL_REQOP) == XL_OPMODE_LISTEN_ONLY ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
@@ -270,9 +260,7 @@ esp_err_t bsp_xl2515_init(uint32_t kbps)
 {
     if (!s_xl_mutex) {
         s_xl_mutex = xSemaphoreCreateMutex();
-        if (!s_xl_mutex) {
-            return ESP_ERR_NO_MEM;
-        }
+        if (!s_xl_mutex) return ESP_ERR_NO_MEM;
     }
 
     spi_bus_config_t buscfg = {
@@ -290,9 +278,7 @@ esp_err_t bsp_xl2515_init(uint32_t kbps)
         .queue_size = 1,
     };
     esp_err_t err = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     ESP_RETURN_ON_ERROR(spi_bus_add_device(SPI2_HOST, &devcfg, &s_xl_spi), TAG, "xl spi add failed");
 
     gpio_config_t int_cfg = {
@@ -316,12 +302,11 @@ esp_err_t bsp_xl2515_init(uint32_t kbps)
 
 bool bsp_xl2515_set_rate(uint32_t kbps)
 {
-    bool ok = xl_configure(kbps) == ESP_OK;
-    if (ok) {
-        s_can2_bitrate_kbps = kbps;
-        ws_log_clear(2);
+    if (kbps == 100 && s_xl_ready && s_can2_bitrate_kbps == 100) {
+        return true;
     }
-    return ok;
+    ESP_LOGW(TAG, "CAN CH2 bitrate change blocked: weekend vehicle-test profile is fixed at 100 kbit/s");
+    return false;
 }
 
 uint32_t bsp_xl2515_get_rate(void)
@@ -331,57 +316,14 @@ uint32_t bsp_xl2515_get_rate(void)
 
 bool bsp_xl2515_send(uint32_t can_id, const uint8_t *data, uint8_t len, bool extd)
 {
-    if (!s_xl_ready) {
-        return false;
-    }
-    if (!extd && can_id > 0x7FF) {
-        extd = true;
-    }
-    if (extd && can_id > 0x1FFFFFFF) {
-        ESP_LOGW(TAG, "invalid extended CAN ID: 0x%" PRIx32, can_id);
-        return false;
-    }
-
-    uint16_t offset = 0;
-    bool all_ok = true;
-    do {
-        uint8_t frame_len = len - offset;
-        if (frame_len > 8) {
-            frame_len = 8;
-        }
-        xSemaphoreTake(s_xl_mutex, portMAX_DELAY);
-        uint8_t waits = 0;
-        uint8_t txb0ctrl = 0;
-        esp_err_t err = xl_read_reg(XL_TXB0CTRL, &txb0ctrl);
-        while (err == ESP_OK && (txb0ctrl & XL_TXREQ) && waits++ < 50) {
-            xSemaphoreGive(s_xl_mutex);
-            vTaskDelay(pdMS_TO_TICKS(1));
-            xSemaphoreTake(s_xl_mutex, portMAX_DELAY);
-            err = xl_read_reg(XL_TXB0CTRL, &txb0ctrl);
-        }
-        bool ok = err == ESP_OK && (txb0ctrl & XL_TXREQ) == 0;
-        if (ok) {
-            err = xl_write_id(XL_TXB0SIDH, can_id, extd);
-            err = err == ESP_OK ? xl_write_reg(XL_TXB0DLC, frame_len & 0x0F) : err;
-            if (frame_len) {
-                err = err == ESP_OK ? xl_write_regs(XL_TXB0D0, data + offset, frame_len) : err;
-            }
-            err = err == ESP_OK ? xl_bit_modify(XL_TXB0CTRL, XL_TXREQ, XL_TXREQ_SET) : err;
-            ok = err == ESP_OK;
-        }
-        xSemaphoreGive(s_xl_mutex);
-        log_can2_frame("TX", can_id, frame_len ? data + offset : NULL, frame_len, extd, ok);
-        all_ok = all_ok && ok;
-        offset += frame_len;
-    } while (offset < len);
-    return all_ok;
+    (void)can_id; (void)data; (void)len; (void)extd;
+    ESP_LOGW(TAG, "CAN CH2 TX blocked: vehicle-test firmware is read-only");
+    return false;
 }
 
 static bool xl_recv_one(uint32_t *can_id, uint8_t *data, uint8_t *len, bool *extd)
 {
-    if (!s_xl_ready || gpio_get_level(WS_XL2515_INT_GPIO) == 1) {
-        return false;
-    }
+    if (!s_xl_ready || gpio_get_level(WS_XL2515_INT_GPIO) == 1) return false;
     xSemaphoreTake(s_xl_mutex, portMAX_DELAY);
     uint8_t intf = 0;
     esp_err_t err = xl_read_reg(XL_CANINTF, &intf);
@@ -409,9 +351,7 @@ static bool xl_recv_one(uint32_t *can_id, uint8_t *data, uint8_t *len, bool *ext
         return false;
     }
     *len = dlc & 0x0F;
-    if (*len > 8) {
-        *len = 8;
-    }
+    if (*len > 8) *len = 8;
     err = xl_read_regs(data_reg, data, *len);
     err = err == ESP_OK ? xl_bit_modify(XL_CANINTF, clear, 0) : err;
     xSemaphoreGive(s_xl_mutex);
@@ -421,7 +361,6 @@ static bool xl_recv_one(uint32_t *can_id, uint8_t *data, uint8_t *len, bool *ext
 static void can2_task(void *arg)
 {
     (void)arg;
-
     while (1) {
         uint32_t id;
         uint8_t data[8];
