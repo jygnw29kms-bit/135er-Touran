@@ -1,0 +1,54 @@
+name: Deploy Touran APK Main
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/deploy-touran-apk-main.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download validated Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: TouranLive-debug
+          path: dist/android
+          github-token: ${{ github.token }}
+          run-id: 39818312820
+
+      - name: Prepare APK
+        run: |
+          set -euo pipefail
+          test -f dist/android/TouranLive-debug.apk
+          cp dist/android/TouranLive-debug.apk dist/android/TouranLive-0.7.3-USB.apk
+          sha256sum dist/android/TouranLive-0.7.3-USB.apk
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+
+      - name: Deploy APK
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.SFTP_HOST }}"
+          test -n "${{ secrets.SFTP_PORT }}"
+          test -n "${{ secrets.SSH_USERNAME }}"
+          sshpass -e scp -P "${{ secrets.SFTP_PORT }}" -o StrictHostKeyChecking=no \
+            dist/android/TouranLive-0.7.3-USB.apk \
+            "${{ secrets.SSH_USERNAME }}@${{ secrets.SFTP_HOST }}:/var/www/vhosts/dezender.de/httpdocs/touran/TouranLive-0.7.3-USB.apk"
+
+      - name: Verify live file
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 --retry-delay 2 -o /tmp/TouranLive-0.7.3-USB.apk \
+            'https://www.dezender.de/touran/TouranLive-0.7.3-USB.apk'
+          test "$(stat -c%s /tmp/TouranLive-0.7.3-USB.apk)" -gt 2000000
+          sha256sum /tmp/TouranLive-0.7.3-USB.apk
