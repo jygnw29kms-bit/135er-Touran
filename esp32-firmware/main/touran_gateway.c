@@ -18,7 +18,7 @@
 #include "lwip/tcp.h"
 
 #define GATEWAY_PORT 13569
-#define GATEWAY_FW "0.3.2-weekend-ro"
+#define GATEWAY_FW "0.3.3-weekend-ro"
 
 static const char *TAG = "touran_gateway";
 static SemaphoreHandle_t s_client_mutex;
@@ -51,8 +51,6 @@ static bool send_line_nonblocking(const char *line)
     }
     size_t len = strlen(line);
     int sent = send(fd, line, len, MSG_DONTWAIT);
-    /* Once a prefix has reached TCP, dropping its suffix would splice the next
-     * JSON message into it. Disconnect so the receiver can start a clean stream. */
     if ((sent >= 0 && sent != (int)len) ||
         (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
         close_client_locked();
@@ -159,7 +157,6 @@ static void serve_client(int fd)
 
     xSemaphoreTake(s_client_mutex, portMAX_DELAY);
     if (s_client_fd == fd) close_client_locked();
-    /* A failed send may already have closed fd. Never close a reused descriptor. */
     xSemaphoreGive(s_client_mutex);
 }
 
