@@ -3,9 +3,15 @@ package de.growcentral.touranlive;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothSocket;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.ResolveInfo;
 import android.net.Network;
@@ -75,6 +81,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final int REQ_BT = 10;
     private static final int REQ_EXPORT_LOG = 20;
+    private static final String ACTION_USB_PERMISSION = "de.growcentral.touranlive.USB_PERMISSION";
     private static final String LOG_UPLOAD_URL = "https://www.dezender.de/touran/api/upload-log.php";
 
     private static final int BG = Color.rgb(5, 7, 10);
@@ -153,12 +160,36 @@ public class MainActivity extends Activity {
     private volatile String gatewaySession = "not-connected";
     private final Object rawCanLock = new Object();
     private final StringBuilder rawCanLog = new StringBuilder();
+    private final StringBuilder rawCanLiveBuffer = new StringBuilder();
     private static final int RAW_CAN_MAX_CHARS = 4 * 1024 * 1024;
+    private static final int RAW_CAN_LIVE_BATCH_MAX_CHARS = 512 * 1024;
+    private static final long RAW_CAN_LIVE_INTERVAL_MS = 3000L;
     private volatile long rawCanFrames = 0L;
     private volatile long rawCanTrimEvents = 0L;
+    private volatile boolean rawCanLiveUploadRunning = false;
+    private volatile long rawCanLiveBatchesSent = 0L;
     private DebugTelemetry telemetry;
     private AppUpdater appUpdater;
     private Esp32GatewayClient gateway;
+    private boolean usbReceiverRegistered;
+    private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (!ACTION_USB_PERMISSION.equals(intent.getAction())) return;
+            UsbDevice device = Build.VERSION.SDK_INT >= 33
+                    ? intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice.class)
+                    : intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+            boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+            if (granted && device != null) {
+                appendSystemLog("ESP32_USB_PERMISSION", "granted vid=" + device.getVendorId() + " pid=" + device.getProductId());
+                connectUsbGateway();
+            } else {
+                connecting = false;
+                setConnectionState("CAN: getrennt", RED);
+                postStatus("USB-Zugriff auf ESP32 wurde nicht freigegeben.");
+                appendSystemLog("ESP32_USB_PERMISSION", "denied");
+            }
+        }
+    };
     private int logRows = 0;
     private long logStartedAt = 0L;
 
@@ -216,6 +247,10 @@ public class MainActivity extends Activity {
     };
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
+        IntentFilter usbFilter = new IntentFilter(ACTION_USB_PERMISSION);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbPermissionReceiver, usbFilter, RECEIVER_NOT_EXPORTED);
+        else registerReceiver(usbPermissionReceiver, usbFilter);
+        usbReceiverRegistered = true;
         telemetry = new DebugTelemetry(this);
         resetLog();
         appendSystemLog("APP_START", "version=" + appVersionName() + " session=" + telemetry.sessionId());
@@ -224,6 +259,7 @@ public class MainActivity extends Activity {
         initEsp32Gateway();
         ui.postDelayed(this::autoConnectIfReady, 900);
         startAutoUploadLoop();
+        startRawCanLiveUploadLoop();
         startConnectionSupervisor();
         appUpdater = new AppUpdater(this, netIo, this::appendSystemLog);
         appUpdater.checkAtStartup();
@@ -732,14 +768,23 @@ public class MainActivity extends Activity {
         catch (Exception e) { toast("Start fehlgeschlagen: " + e.getMessage()); }
     }
 
-    private boolean hasInternet() {
+    private Network internetNetwork() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            if (cm == null) return false;
-            NetworkCapabilities c = cm.getNetworkCapabilities(cm.getActiveNetwork());
-            // The gateway AP is local-only. A Wi-Fi transport alone does not imply Internet access.
-            return c != null && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-        } catch (SecurityException e) { return false; }
+            if (cm == null) return null;
+            Network fallback = null;
+            for (Network network : cm.getAllNetworks()) {
+                NetworkCapabilities c = cm.getNetworkCapabilities(network);
+                if (c == null || !c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+                if (c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return network;
+                if (fallback == null) fallback = network;
+            }
+            return fallback;
+        } catch (SecurityException e) { return null; }
+    }
+
+    private boolean hasInternet() {
+        return internetNetwork() != null;
     }
 
     private SocketFactory gatewaySocketFactory() {
@@ -787,7 +832,7 @@ public class MainActivity extends Activity {
         String server = internetPerm && net ? testUploadEndpoint() : "kein aktiver Internet-Transport";
         r.append(internetPerm ? "OK" : "FEHLER").append("  INTERNET-Recht\n");
         r.append(btPresent ? "INFO" : "INFO").append("  Bluetooth-Hardware (nur optionaler BLE-Fallback)\n");
-        r.append(btEnabled ? "INFO" : "INFO").append("  Bluetooth " + (btEnabled ? "eingeschaltet" : "ausgeschaltet") + " – für Wi-Fi-Gateway nicht erforderlich\n");
+        r.append(btEnabled ? "INFO" : "INFO").append("  Bluetooth " + (btEnabled ? "eingeschaltet" : "ausgeschaltet") + " – für USB-Gateway nicht erforderlich\n");
         r.append(btConnect ? "INFO" : "INFO").append("  BLUETOOTH_CONNECT (nur BLE-Fallback)\n");
         r.append(btScan ? "INFO" : "INFO").append("  BLUETOOTH_SCAN (nur BLE-Fallback)\n");
         r.append(gateway != null && gateway.isConnected() ? "OK" : "INFO").append("  ESP32-S3-CAN-2CH-U Gateway-Verbindung\n");
@@ -839,7 +884,7 @@ public class MainActivity extends Activity {
                     long now=System.currentTimeMillis();
                     if (hasInternet()) {
                         // Retry persisted uploads as soon as connectivity is available.
-                        DebugTelemetry.Result retry = telemetry.flush(LOG_UPLOAD_URL, getInstallId(), appVersionName());
+                        DebugTelemetry.Result retry = telemetry.flush(LOG_UPLOAD_URL, getInstallId(), appVersionName(), internetNetwork());
                         if (retry.sent > 0) appendSystemLog("UPLOAD_RETRY_OK", "sent=" + retry.sent + " pending=" + retry.pending);
                         // Queue one rolling snapshot per minute.
                         if (now-lastAutoUploadAt>=AUTO_UPLOAD_INTERVAL_MS) {
@@ -852,6 +897,48 @@ public class MainActivity extends Activity {
                 catch (Exception e) { appendSystemLog("UPLOAD_LOOP_ERROR", safe(e.getMessage())); }
             }
         });
+    }
+
+    private void startRawCanLiveUploadLoop() {
+        if (rawCanLiveUploadRunning) return;
+        rawCanLiveUploadRunning = true;
+        netIo.execute(() -> {
+            while (rawCanLiveUploadRunning && !destroyed) {
+                try {
+                    Thread.sleep(RAW_CAN_LIVE_INTERVAL_MS);
+                    if (!polling || !hasInternet()) continue;
+                    String batch = drainRawCanLiveBatch();
+                    if (batch == null || batch.isEmpty()) continue;
+                    String payload = "TouranLive raw CAN live\n" +
+                            "gateway_session=" + gatewaySession + "\n" +
+                            "app_session=" + telemetry.sessionId() + "\n" +
+                            "generated=" + now() + "\n" +
+                            "gateway_session;gateway_ts_us;channel;can_id;frame_type;data_hex\n" + batch;
+                    telemetry.queueSnapshot("raw-can-live", payload);
+                    DebugTelemetry.Result result = telemetry.flush(LOG_UPLOAD_URL, getInstallId(), appVersionName(), internetNetwork());
+                    if (result.sent > 0) rawCanLiveBatchesSent += result.sent;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    appendSystemLog("RAW_CAN_LIVE_UPLOAD_ERROR", safe(e.getMessage()));
+                }
+            }
+        });
+    }
+
+    private String drainRawCanLiveBatch() {
+        synchronized (rawCanLock) {
+            if (rawCanLiveBuffer.length() == 0) return "";
+            int take = Math.min(rawCanLiveBuffer.length(), RAW_CAN_LIVE_BATCH_MAX_CHARS);
+            if (take < rawCanLiveBuffer.length()) {
+                int nl = rawCanLiveBuffer.lastIndexOf("\n", take);
+                if (nl > 0) take = nl + 1;
+            }
+            String batch = rawCanLiveBuffer.substring(0, take);
+            rawCanLiveBuffer.delete(0, take);
+            return batch;
+        }
     }
 
     private void initEsp32Gateway() {
@@ -992,7 +1079,7 @@ public class MainActivity extends Activity {
         if (requestCode == REQ_BT) {
             appendSystemLog("BT_PERMISSION", hasBtPermission() ? "granted" : "denied");
             if (hasBtPermission()) ui.postDelayed(this::autoConnectIfReady, 300);
-            else postStatus("Bluetooth-Berechtigung fehlt; Wi-Fi-Gateway bleibt verfügbar.");
+            else postStatus("Bluetooth-Berechtigung fehlt; USB-Gateway ist davon unabhängig.");
         }
     }
 
@@ -1038,10 +1125,31 @@ public class MainActivity extends Activity {
         manualDisconnect = false;
         connecting = true;
         setConnectionState("CAN: verbinde …", PANEL_2);
-        postStatus("Verbinde mit ESP32-S3-CAN-2CH-U …");
-        appendSystemLog("ESP32_CONNECT", "wifi " + Esp32GatewayClient.DEFAULT_HOST + ":" + Esp32GatewayClient.DEFAULT_PORT);
+        postStatus("Verbinde ESP32-S3-CAN-2CH-U über USB …");
+        appendSystemLog("ESP32_CONNECT", "usb 303a:1001");
         if (gateway == null) initEsp32Gateway();
-        gateway.connectWifi(Esp32GatewayClient.DEFAULT_HOST, Esp32GatewayClient.DEFAULT_PORT, gatewaySocketFactory());
+        connectUsbGateway();
+    }
+
+    private void connectUsbGateway() {
+        UsbManager manager = (UsbManager) getSystemService(USB_SERVICE);
+        UsbDevice device = Esp32GatewayClient.findEsp32UsbDevice(manager);
+        if (manager == null || device == null) {
+            connecting = false;
+            setConnectionState("CAN: getrennt", RED);
+            postStatus("ESP32 nicht am USB des Radios erkannt.");
+            return;
+        }
+        if (!manager.hasPermission(device)) {
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_MUTABLE;
+            PendingIntent permissionIntent = PendingIntent.getBroadcast(
+                    this, 0, new Intent(ACTION_USB_PERMISSION).setPackage(getPackageName()), flags);
+            manager.requestPermission(device, permissionIntent);
+            postStatus("Warte auf USB-Freigabe für ESP32 …");
+            return;
+        }
+        gateway.connectUsb(manager);
     }
     private boolean isTransportFailure(String message) {
         String m = message == null ? "" : message.toLowerCase(Locale.ROOT);
@@ -1251,9 +1359,9 @@ public class MainActivity extends Activity {
                 putVag("Drehzahl", b.value(1)); putVag("Motorlast", b.value(2));
                 putVag("VAG_BoostTargetAbs", b.value(3)); putVag("VAG_BoostActualAbs", b.value(4));
                 break;
-            case 134:
-                putVag("VAG_OilTemp", b.value(1));
-                break;
+            // MWB 134 is unnamed in the actual engine export. Do not advertise
+            // field 1 as oil temperature without a verified CAV definition.
+            // The named reference is cluster IDE00196, not this engine block.
             case 210:
                 putVag("VAG_MAF", b.value(3));
                 break;
@@ -1818,6 +1926,7 @@ public class MainActivity extends Activity {
                 rawCanTrimEvents++;
             }
             rawCanLog.append(line);
+            rawCanLiveBuffer.append(line);
             rawCanFrames++;
         }
         if ((rawCanFrames % 500L) == 0L) updateLogBadge();
@@ -1844,6 +1953,7 @@ public class MainActivity extends Activity {
         }
         synchronized (rawCanLock) {
             rawCanLog.setLength(0);
+            rawCanLiveBuffer.setLength(0);
             rawCanFrames = 0L;
             rawCanTrimEvents = 0L;
             lastQueuedRawFrames = 0L;
@@ -1964,7 +2074,7 @@ public class MainActivity extends Activity {
             report.append("protocol=").append(protocolName).append('\n');
             report.append("gateway_board=ESP32-S3-CAN-2CH-U\n");
             report.append("gateway_connected=").append(gateway != null && gateway.isConnected()).append('\n');
-            report.append("gateway_transport=wifi-tcp\n");
+            report.append("gateway_transport=usb-serial-jtag\n");
             report.append("gateway_readonly=true\n");
             report.append("polling=").append(polling).append('\n');
             report.append("connecting=").append(connecting).append('\n');
@@ -1994,7 +2104,7 @@ public class MainActivity extends Activity {
                 appendSystemLog("SERVER_QUEUE", "offline pending=" + telemetry.pendingCount());
                 return;
             }
-            DebugTelemetry.Result result = telemetry.flush(LOG_UPLOAD_URL, installId, appVersionName());
+            DebugTelemetry.Result result = telemetry.flush(LOG_UPLOAD_URL, installId, appVersionName(), internetNetwork());
             if (result.pending == 0) {
                 appendSystemLog("SERVER_UPLOAD", "sent=" + result.sent + " pending=0 " + result.lastResponse);
                 if (capabilityReport) toast("Gateway-Bericht an dezender.de gesendet.");
@@ -2365,10 +2475,15 @@ public class MainActivity extends Activity {
         polling = false;
         connecting = false;
         autoUploadRunning = false;
+        rawCanLiveUploadRunning = false;
         connectionSupervisorRunning = false;
         destroyed = true;
         manualDisconnect = true;
         ui.removeCallbacksAndMessages(null);
+        if (usbReceiverRegistered) {
+            try { unregisterReceiver(usbPermissionReceiver); } catch (Exception ignored) { }
+            usbReceiverRegistered = false;
+        }
         if (gateway != null) gateway.close();
         closeSocket();
         io.shutdownNow();
