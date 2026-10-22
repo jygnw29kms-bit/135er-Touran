@@ -1,9 +1,18 @@
 package de.growcentral.touranlive;
 
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbManager;
+
+import com.hoho.android.usbserial.driver.UsbSerialDriver;
+import com.hoho.android.usbserial.driver.UsbSerialPort;
+import com.hoho.android.usbserial.driver.UsbSerialProber;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
-import java.io.BufferedWriter;
+
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
@@ -11,13 +20,16 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import javax.net.SocketFactory;
 
-/** Read-only NDJSON client. Reading and command writes have separate, session-scoped queues. */
+/** Read-only NDJSON client. USB is the productive transport; TCP remains only for tests/service builds. */
 public final class Esp32GatewayClient implements AutoCloseable {
+    public static final int ESPRESSIF_VID = 0x303A;
+    public static final int ESP_SERIAL_JTAG_PID = 0x1001;
     public static final String DEFAULT_HOST = "192.168.4.1";
     public static final int DEFAULT_PORT = 13569;
     private static final long HELLO_TIMEOUT_MS = 5000;
@@ -33,21 +45,44 @@ public final class Esp32GatewayClient implements AutoCloseable {
         void onProtocolError(String line, String reason);
     }
 
-    private static final class Session {
-        final SocketFactory factory;
+    private abstract static class Session {
         volatile boolean running = true, ready;
+        abstract void send(JSONObject command) throws IOException;
+        abstract void stop();
+    }
+
+    private static final class TcpSession extends Session {
+        final SocketFactory factory;
         volatile Socket socket;
         BufferedWriter writer;
-        Session(SocketFactory factory) { this.factory = factory; }
-        void stop() {
-            running = false;
-            ready = false;
+        TcpSession(SocketFactory factory) { this.factory = factory; }
+        @Override void stop() {
+            running = false; ready = false;
             try { if (socket != null) socket.close(); } catch (IOException ignored) { }
             synchronized (this) { writer = null; }
         }
-        synchronized void send(JSONObject command) throws IOException {
+        @Override synchronized void send(JSONObject command) throws IOException {
             if (!running || writer == null) return;
             writer.write(command.toString()); writer.write('\n'); writer.flush();
+        }
+    }
+
+    private static final class UsbSession extends Session {
+        final UsbSerialPort port;
+        final UsbDeviceConnection connection;
+        UsbSession(UsbSerialPort port, UsbDeviceConnection connection) {
+            this.port = port; this.connection = connection;
+        }
+        @Override synchronized void send(JSONObject command) throws IOException {
+            if (!running) return;
+            byte[] data = (command.toString() + "\n").getBytes(StandardCharsets.UTF_8);
+            int written = port.write(data, 1000);
+            if (written != data.length) throw new IOException("USB short write " + written + "/" + data.length);
+        }
+        @Override void stop() {
+            running = false; ready = false;
+            try { port.close(); } catch (Exception ignored) { }
+            try { connection.close(); } catch (Exception ignored) { }
         }
     }
 
@@ -59,26 +94,94 @@ public final class Esp32GatewayClient implements AutoCloseable {
 
     public Esp32GatewayClient(Listener listener) { this.listener = listener; }
     public boolean isConnected() { Session s = active; return s != null && s.running && s.ready; }
+
+    public static UsbDevice findEsp32UsbDevice(UsbManager manager) {
+        if (manager == null) return null;
+        for (UsbDevice d : manager.getDeviceList().values()) {
+            if (d.getVendorId() == ESPRESSIF_VID && d.getProductId() == ESP_SERIAL_JTAG_PID) return d;
+        }
+        return null;
+    }
+
+    public synchronized void connectUsb(UsbManager manager) {
+        if (closed || active != null) return;
+        if (manager == null) { listener.onDisconnected("USB manager unavailable"); return; }
+        UsbDevice target = findEsp32UsbDevice(manager);
+        if (target == null) { listener.onDisconnected("ESP32 USB not found"); return; }
+        if (!manager.hasPermission(target)) { listener.onDisconnected("ESP32 USB permission required"); return; }
+
+        UsbSerialDriver selected = null;
+        List<UsbSerialDriver> drivers = UsbSerialProber.getDefaultProber().findAllDrivers(manager);
+        for (UsbSerialDriver d : drivers) {
+            UsbDevice dev = d.getDevice();
+            if (dev.getDeviceId() == target.getDeviceId()) { selected = d; break; }
+        }
+        if (selected == null || selected.getPorts().isEmpty()) {
+            listener.onDisconnected("ESP32 USB serial interface not found"); return;
+        }
+        UsbDeviceConnection connection = manager.openDevice(target);
+        if (connection == null) { listener.onDisconnected("ESP32 USB open failed"); return; }
+        UsbSession s = new UsbSession(selected.getPorts().get(0), connection);
+        active = s;
+        reads.execute(() -> runUsb(s));
+    }
+
+    /** Service/test fallback. Productive vehicle builds use USB. */
     public void connectWifi() { connectWifi(DEFAULT_HOST, DEFAULT_PORT); }
     public void connectWifi(String host, int port) { connectWifi(host, port, SocketFactory.getDefault()); }
-
-    /** Allows Android to bind only this socket to the local Wi-Fi network, leaving Internet jobs alone. */
     public synchronized void connectWifi(String host, int port, SocketFactory factory) {
         if (closed || active != null) return;
         if (host == null || host.trim().isEmpty() || port < 1 || port > 65535 || factory == null) {
             listener.onDisconnected("invalid gateway endpoint"); return;
         }
-        Session s = new Session(factory);
+        TcpSession s = new TcpSession(factory);
         active = s;
         reads.execute(() -> runTcp(s, host, port));
     }
 
     private static long nowMs() { return System.nanoTime() / 1000000L; }
 
-    private void runTcp(Session s, String host, int port) {
+    private void runUsb(UsbSession s) {
+        String reason = "USB connection closed";
+        try {
+            s.port.open(s.connection);
+            s.port.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE);
+            s.send(new JSONObject().put("cmd", "hello"));
+            long started = nowMs(), lastMessage = started, lastHealth = started;
+            byte[] buffer = new byte[4096];
+            StringBuilder line = new StringBuilder();
+            boolean oversized = false;
+            while (s.running) {
+                long now = nowMs();
+                if (!s.ready && now - started >= HELLO_TIMEOUT_MS) throw new IOException("gateway hello timeout");
+                if (s.ready && now - lastMessage >= IDLE_TIMEOUT_MS) throw new IOException("gateway response timeout");
+                if (s.ready && now - lastHealth >= HEALTH_INTERVAL_MS) {
+                    s.send(new JSONObject().put("cmd", "health")); lastHealth = now;
+                }
+                int n = s.port.read(buffer, 250);
+                if (n <= 0) continue;
+                for (int i = 0; i < n; i++) {
+                    int c = buffer[i] & 0xff;
+                    if (c == '\n') {
+                        if (!oversized && line.length() > 0 && parseLine(s, line.toString())) lastMessage = nowMs();
+                        line.setLength(0); oversized = false;
+                    } else if (c != '\r' && !oversized) {
+                        if (line.length() >= GatewayProtocol.MAX_LINE_CHARS) {
+                            listener.onProtocolError("", "gateway line too long"); line.setLength(0); oversized = true;
+                        } else line.append((char)c);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            reason = s.running ? safe(e.getMessage()) : "disconnected";
+        } finally {
+            finishSession(s, reason);
+        }
+    }
+
+    private void runTcp(TcpSession s, String host, int port) {
         String reason = "connection closed";
         try {
-            // Publish the socket before connect so cancellation also interrupts connection attempts.
             synchronized (s) {
                 if (!s.running) return;
                 s.socket = s.factory.createSocket();
@@ -86,8 +189,7 @@ public final class Esp32GatewayClient implements AutoCloseable {
             Socket socket = s.socket;
             socket.setKeepAlive(true); socket.setTcpNoDelay(true); socket.setSoTimeout(1000);
             socket.connect(new InetSocketAddress(host, port), 2500);
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(),
-                    StandardCharsets.UTF_8.newDecoder()))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8.newDecoder()))) {
                 synchronized (s) {
                     if (!s.running) return;
                     s.writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
@@ -119,10 +221,14 @@ public final class Esp32GatewayClient implements AutoCloseable {
         } catch (Exception e) {
             reason = s.running ? safe(e.getMessage()) : "disconnected";
         } finally {
-            s.stop();
-            synchronized (this) { if (active == s) active = null; }
-            listener.onDisconnected(reason);
+            finishSession(s, reason);
         }
+    }
+
+    private void finishSession(Session s, String reason) {
+        s.stop();
+        synchronized (this) { if (active == s) active = null; }
+        listener.onDisconnected(reason);
     }
 
     private boolean parseLine(Session s, String line) throws Exception {
@@ -130,7 +236,6 @@ public final class Esp32GatewayClient implements AutoCloseable {
         try { o = GatewayProtocol.parse(line); }
         catch (Exception e) {
             listener.onProtocolError(line, safe(e.getMessage()));
-            // A peer announcing incompatible identity/mode cannot establish a trusted session.
             String type = "";
             try { type = new JSONObject(line).optString("type"); } catch (Exception ignored) { }
             if ("hello".equals(type) || "health".equals(type)) throw new IOException("incompatible gateway: " + e.getMessage());
@@ -180,11 +285,31 @@ public final class Esp32GatewayClient implements AutoCloseable {
             sendAsync(command("filter").put("ch", channel).put("ids", a));
         } catch (Exception e) { listener.onProtocolError("filter", safe(e.getMessage())); }
     }
+
+    public void sendMfaNavigation(NavigationManeuver maneuver) {
+        NavigationManeuver m = maneuver == null ? NavigationManeuver.inactive() : maneuver;
+        try {
+            JSONObject o = command("mfa_nav");
+            o.put("active", m.active); o.put("action", m.action); o.put("distance_m", m.distanceMeters);
+            o.put("road_name", m.roadName); o.put("road_number", m.roadNumber); o.put("exit_text", m.exitText);
+            o.put("roundabout_exit", m.roundaboutExit); o.put("heading_deg", m.headingDegrees);
+            sendAsync(o);
+        } catch (Exception e) { listener.onProtocolError("mfa_nav", safe(e.getMessage())); }
+    }
+
+    public void sendMfaCompass(double headingDegrees) {
+        try {
+            double h = headingDegrees % 360.0; if (h < 0) h += 360.0;
+            sendAsync(command("mfa_compass").put("heading_deg", h));
+        } catch (Exception e) { listener.onProtocolError("mfa_compass", safe(e.getMessage())); }
+    }
+
     private static JSONObject command(String name) {
         JSONObject o = new JSONObject();
         try { o.put("cmd", name); } catch (Exception e) { throw new IllegalStateException(e); }
         return o;
     }
+
     private void sendAsync(JSONObject command) {
         Session s = active;
         if (s == null || !s.ready || !s.running) return;
@@ -194,8 +319,9 @@ public final class Esp32GatewayClient implements AutoCloseable {
                 try { s.send(command); }
                 catch (IOException e) { listener.onProtocolError(command.toString(), safe(e.getMessage())); s.stop(); }
             });
-        } catch (RejectedExecutionException ignored) { /* client closed */ }
+        } catch (RejectedExecutionException ignored) { }
     }
+
     public void disconnect() { Session s = active; if (s != null) s.stop(); }
     @Override public synchronized void close() {
         closed = true; disconnect(); reads.shutdownNow(); commands.shutdownNow();
