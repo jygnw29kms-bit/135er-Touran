@@ -18,7 +18,7 @@
 #include "lwip/tcp.h"
 
 #define GATEWAY_PORT 13569
-#define GATEWAY_FW "0.3.1-weekend-ro"
+#define GATEWAY_FW "0.3.2-weekend-ro"
 
 static const char *TAG = "touran_gateway";
 static SemaphoreHandle_t s_client_mutex;
