@@ -76,8 +76,7 @@ public final class Esp32GatewayClient implements AutoCloseable {
         @Override synchronized void send(JSONObject command) throws IOException {
             if (!running) return;
             byte[] data = (command.toString() + "\n").getBytes(StandardCharsets.UTF_8);
-            int written = port.write(data, 1000);
-            if (written != data.length) throw new IOException("USB short write " + written + "/" + data.length);
+            port.write(data, 1000);
         }
         @Override void stop() {
             running = false; ready = false;
