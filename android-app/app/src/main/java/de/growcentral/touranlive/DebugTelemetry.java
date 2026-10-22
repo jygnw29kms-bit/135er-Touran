@@ -1,6 +1,7 @@
 package de.growcentral.touranlive;
 
 import android.content.Context;
+import android.net.Network;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -90,10 +91,14 @@ public final class DebugTelemetry {
     }
 
     public Result flush(String uploadUrl, String installId, String appVersion) {
-        synchronized (flushLock) { return flushQueue(uploadUrl, installId, appVersion); }
+        return flush(uploadUrl, installId, appVersion, null);
     }
 
-    private Result flushQueue(String uploadUrl, String installId, String appVersion) {
+    public Result flush(String uploadUrl, String installId, String appVersion, Network network) {
+        synchronized (flushLock) { return flushQueue(uploadUrl, installId, appVersion, network); }
+    }
+
+    private Result flushQueue(String uploadUrl, String installId, String appVersion, Network network) {
         int sent = 0; String last = "";
         File[] files = queueDir.listFiles((d,n) -> n.endsWith(".pending"));
         if (files == null) return new Result(0,0,"");
@@ -105,7 +110,7 @@ public final class DebugTelemetry {
                 byte[] body = readAll(f);
                 QueueMeta meta = meta(f);
                 URL u = new URL(uploadUrl);
-                c = (HttpURLConnection)u.openConnection();
+                c = (HttpURLConnection)(network != null ? network.openConnection(u) : u.openConnection());
                 c.setConnectTimeout(8000); c.setReadTimeout(12000);
                 c.setRequestMethod("POST"); c.setDoOutput(true);
                 c.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
