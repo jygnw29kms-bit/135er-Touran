@@ -25,6 +25,7 @@ if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $clientDay)) {
 } else {
     $dayPath = $now->format('Y/m/d');
 }
+// Production log root: keep telemetry outside the public document root.
 $root = dirname(__DIR__, 3) . '/private/touran-logs';
 $dir = $root . '/' . $dayPath . '/' . $install;
 // Parallel first uploads may create the directory between the two checks.
